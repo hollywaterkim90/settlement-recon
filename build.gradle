@@ -1,0 +1,48 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.3.1'
+    id 'io.spring.dependency-management' version '1.1.6'
+}
+
+group = 'org.example'
+version = '1.0-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+// Spring Boot 3.3.1 이 고정하는 Testcontainers 는 Docker Engine 29.x 와 통신하지 못해
+// /info 가 400 으로 떨어진다. 상향 고정. (이전 프로젝트에서 겪은 함정)
+ext['testcontainers.version'] = '1.21.3'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+
+    // Flyway 가 스키마의 주인. 하이버네이트는 validate 로 검사만 한다.
+    implementation 'org.flywaydb:flyway-core'
+    implementation 'org.flywaydb:flyway-database-postgresql'
+    runtimeOnly 'org.postgresql:postgresql'
+
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+    testImplementation 'org.testcontainers:junit-jupiter'
+    testImplementation 'org.testcontainers:postgresql'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+
+    // docker-java 는 API 버전 미지정 시 v1.32 로 요청하는데 Docker Engine 29.x 는
+    // 최소 1.40 을 요구해 /info 가 400 으로 떨어진다. 1.43 은 Docker 24~29 공통 구간.
+    systemProperty 'api.version', '1.43'
+}
