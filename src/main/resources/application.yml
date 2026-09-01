@@ -1,7 +1,7 @@
 spring:
   # Flyway 가 스키마 주인(src/main/resources/db/migration/V*.sql). 하이버네이트는 검사만.
   datasource:
-    url: jdbc:postgresql://localhost:5432/recon
+    url: jdbc:postgresql://localhost:5433/recon
     username: recon
     password: recon
   jpa:
