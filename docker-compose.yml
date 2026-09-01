@@ -6,4 +6,5 @@ services:
       POSTGRES_USER: recon
       POSTGRES_PASSWORD: recon
     ports:
-      - "5432:5432"
+      # 호스트에 이미 5432를 쓰는 Postgres(예: 로컬 설치본)가 있어 5433으로 매핑한다.
+      - "5433:5432"
