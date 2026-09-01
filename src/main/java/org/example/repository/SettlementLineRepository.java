@@ -1,4 +1,4 @@
-package org.example;
+package org.example.repository;
 
 import org.example.entity.SettlementLine;
 import org.springframework.data.jpa.repository.JpaRepository;

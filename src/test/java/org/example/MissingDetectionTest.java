@@ -3,6 +3,9 @@ package org.example;
 import org.example.entity.OrderLedger;
 import org.example.entity.SettlementBatch;
 import org.example.entity.SettlementLine;
+import org.example.repository.OrderLedgerRepository;
+import org.example.repository.SettlementBatchRepository;
+import org.example.repository.SettlementLineRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -60,6 +63,7 @@ class MissingDetectionTest {
         saveLine(batchId, "naver", "S2", "400.00");
         lines.flush();
 
+        // 배치 grace_days 를 안 건드림 → 기본 0(유예 없음) → #1 순수 누락 검출. (유예 경계는 T2SettlementWindowTest.)
         List<OrderLedger> missing = ledgers.findMissingByBatchId(batchId);
 
         assertThat(missing).extracting(OrderLedger::getOrderId)

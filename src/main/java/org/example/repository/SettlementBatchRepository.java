@@ -1,4 +1,4 @@
-package org.example;
+package org.example.repository;
 
 import org.example.entity.SettlementBatch;
 import org.springframework.data.jpa.repository.JpaRepository;
