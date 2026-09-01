@@ -36,4 +36,8 @@ public class SettlementBatch {
 
     @Column(nullable = false)
     private OffsetDateTime periodEnd;
+
+    // T+2 유예일수(달력일). 규칙을 데이터로 두는 원칙에 따라 배치가 들고 있는다. 0 = 유예 없음.
+    @Column(nullable = false)
+    private int graceDays;
 }
