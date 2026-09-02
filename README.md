@@ -57,9 +57,23 @@ docker compose up -d      # Postgres
 - 검증: 정상 매칭 + 유령(부분정산 2줄·채널만 다른 함정 포함)을 섞어 `GhostSettlementTest`.
   `not exists`→`exists` 로 뒤집으면 이 테스트만 red.
 
+### ✅ 금액 불일치 완료 (#2)
+명세는 있는데 `(channel, order_id)`별 `SUM(settled_amount)`이 원장 `amount`와 다른 주문을 잡는다.
+#1/#3 이 '존재/부재'였다면 이건 '비교' — 그래서 집계가 들어간다.
+- 앵커는 원장: `OrderLedgerRepository.findAmountMismatchByBatchId` — `settlement_line`을
+  `(channel, order_id)`로 **JOIN** 후 `GROUP BY … HAVING o.amount <> SUM(...)`.
+- JOIN 이 '명세 있는 주문'만 남겨 **명세 없는 주문(=#1)은 자동 제외** — #2 는 #1 과 안 겹친다.
+- 유예는 **안 넣는다**(순수 합-비교). '유예 중 부족정산은 진행 중'은 파생 이슈로 분리(아래 #6).
+- 결과는 **프로젝션**(`AmountMismatch`: 채널·주문·원장액·명세합) — 어느 테이블 행도 아닌
+  계산값이라 엔티티로는 못 담는다. 별칭은 큰따옴표로(Postgres 소문자 접힘 방지).
+- Postgres `numeric` 의 `<>` 는 **값 비교**(`1000.00 = 1000.0000`)라 부족·초과를 다 잡고
+  `BigDecimal.equals` 의 scale 함정도 안 밟는다.
+- 검증: 부족·초과 + 함정(합 일치·scale만 다름·명세 없음·기간 밖)을 섞어 `AmountMismatchTest`.
+  `<>`→`=` 로 뒤집으면 이 테스트만 red.
+
 ### 다음 (파생 이슈)
-- **금액 불일치** — 명세 줄은 있으나 합이 원장과 다름(부분정산 합산·수수료 검증).
 - **영업일 유예** — T+2를 달력일에서 영업일(주말·공휴일 제외) 기준으로.
+- **유예-인지 부족정산** — #2 부족 케이스에서, 아직 유예 중이라 나머지가 올 예정인 부분정산을 오검출 않기(초과는 항상 검출).
 - **대용량 첫 맛** — 합성 데이터 수십만 건 + `EXPLAIN`으로 실행계획 확인, `settlement_line(batch_id, channel, order_id)` 인덱스로 `NOT EXISTS` 살리기.
 
 ### 아직 만들지 않음 (YAGNI)
