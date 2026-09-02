@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 public interface OrderLedgerRepository extends JpaRepository<OrderLedger, OrderLedgerId> {
@@ -44,4 +45,41 @@ public interface OrderLedgerRepository extends JpaRepository<OrderLedger, OrderL
               )
             """, nativeQuery = true)
     List<OrderLedger> findMissingByBatchId(@Param("batchId") Long batchId);
+
+    // 금액 불일치(#2): 명세는 있는데 (channel, order_id)별 SUM(settled_amount) 이 원장 amount 와 다른 주문.
+    //   #1/#3 이 '존재/부재'였다면 이건 '비교'다 → 집계(GROUP BY … SUM)가 들어간다.
+    //   - settlement_line 을 (channel, order_id)로 JOIN → '명세 있는 주문'만 남는다.
+    //     명세 없는 주문(=#1 누락)은 조인에서 빠지므로 #2 와 겹치지 않는다.
+    //   - 유예(#4)는 안 넣는다: 순수 합-비교. '유예 중 부족정산은 진행 중'은 파생 이슈로 분리.
+    //   - having 의 o.amount <> SUM(...). Postgres numeric 의 <> 는 값 비교(1000.00 = 1000.0000)라
+    //     부호 무관 부족·초과를 다 잡고 BigDecimal.equals 의 scale 함정도 안 밟는다.
+    //   - 별칭을 큰따옴표로 감싼 이유: Postgres 는 안 감싼 식별자를 소문자로 접어(orderId→orderid)
+    //     인터페이스 프로젝션 getter 매칭이 깨진다. 감싸서 카멜케이스를 보존한다.
+    @Query(value = """
+            select o.channel      as "channel",
+                   o.order_id     as "orderId",
+                   o.amount       as "ledgerAmount",
+                   sum(s.settled_amount) as "settledSum"
+            from order_ledger o
+            join settlement_batch b on b.id = :batchId
+            join settlement_line s
+                  on s.batch_id = :batchId
+                 and s.channel  = o.channel
+                 and s.order_id = o.order_id
+            where o.channel = b.channel
+              and o.occurred_at >= b.period_start
+              and o.occurred_at <  b.period_end
+            group by o.channel, o.order_id, o.amount
+            having o.amount <> sum(s.settled_amount)
+            """, nativeQuery = true)
+    List<AmountMismatch> findAmountMismatchByBatchId(@Param("batchId") Long batchId);
+
+    // 조회 결과 모양(프로젝션): 어느 테이블 행도 아닌, 원장 amount + 명세 SUM 을 조합한 값.
+    // getter 이름 = 쿼리 별칭. diff 는 안 담고 쓰는 쪽에서 ledgerAmount - settledSum.
+    interface AmountMismatch {
+        String getChannel();
+        String getOrderId();
+        BigDecimal getLedgerAmount();
+        BigDecimal getSettledSum();
+    }
 }
