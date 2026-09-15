@@ -55,6 +55,14 @@ public interface OrderLedgerRepository extends JpaRepository<OrderLedger, OrderL
     //     부호 무관 부족·초과를 다 잡고 BigDecimal.equals 의 scale 함정도 안 밟는다.
     //   - 별칭을 큰따옴표로 감싼 이유: Postgres 는 안 감싼 식별자를 소문자로 접어(orderId→orderid)
     //     인터페이스 프로젝션 getter 매칭이 깨진다. 감싸서 카멜케이스를 보존한다.
+    //
+    // ⚠️ 운영 검출에는 쓰지 않는다 — #8(수수료 검증)이 이걸 포함한다.
+    //   이 쿼리는 "명세 합 = 원장"을 기대하는데, 실제 정산은 플랫폼이 수수료를 떼고 준다.
+    //   그래서 요율이 있는 채널에서는 *정상 정산이 전부* 불일치로 잡혀 거짓 경보가 된다
+    //   (원장 10,000 → 수수료 330 → 명세 9,670 인데 10,000 ≠ 9,670).
+    //   findFeeAwareMismatchByBatchId 가 기대값을 '원장 − 수수료'로 바꾼 버전이고,
+    //   수수료 0/규칙 없는 채널에서는 이 쿼리와 같은 결과를 낸다(coalesce(rate, 0)).
+    //   남겨둔 이유는 AmountMismatchTest 가 부족·초과·scale·기간밖 함정을 지키는 기준선이기 때문.
     @Query(value = """
             select o.channel      as "channel",
                    o.order_id     as "orderId",
@@ -78,8 +86,67 @@ public interface OrderLedgerRepository extends JpaRepository<OrderLedger, OrderL
     // getter 이름 = 쿼리 별칭. diff 는 안 담고 쓰는 쪽에서 ledgerAmount - settledSum.
     interface AmountMismatch {
         String getChannel();
+
         String getOrderId();
+
         BigDecimal getLedgerAmount();
+
+        BigDecimal getSettledSum();
+    }
+
+
+    // 수수료 검증(#8): 명세 합이 '원장 − 수수료'(기대 순액)와 다른 주문. #2 의 수수료-인지 버전.
+    //   #2 는 "명세 합 = 원장"을 기대했지만 실제 정산은 플랫폼이 수수료를 떼고 준다.
+    //   여기서 바뀌는 건 비교 기준 하나뿐 — 조인·스코프·집계는 #2 와 같다.
+    //   - fee_rule 은 LEFT JOIN + coalesce(rate, 0): 규칙이 없는 채널도 검출이 계속 돈다.
+    //     INNER 로 하면 규칙 데이터가 안 들어온 채널이 '검출 0건'으로 보여 오차가 조용히 묻힌다
+    //     — 대사에서 가장 위험한 실패다. coalesce 로 수수료 0 이 되면 결과는 #2 와 같아진다.
+    //   - fee_rule.channel 이 PK 라 이 조인은 행을 불리지 않는다(SUM 이 부풀 걱정 없음).
+    //   - 기대 순액 = amount − trunc(amount × rate). 버림(trunc)으로 **고정**한다.
+    //     반올림 방식이 플랫폼과 1원이라도 어긋나면 정상 건이 전부 불일치로 잡힌다
+    //     → 채널별 반올림 방식의 데이터화는 파생 이슈. floor 가 아니라 trunc 인 이유는 음수(환불)
+    //     에서 둘이 갈리기 때문인데, 음수 금액 자체가 지금은 범위 밖이다.
+    //   - Postgres 의 round 는 numeric 이면 반올림, double 이면 은행가 반올림이라 타입에 따라 다르다.
+    //     amount 를 numeric 으로 둔 덕에 이 함정은 안 밟는다.
+    //   - f.rate 를 GROUP BY 에 넣어야 한다: having 에서 참조하는데 집계가 아니다.
+    //     f.channel 이 PK 라도 Postgres 는 조인 등식을 통한 함수 종속까지는 추적하지 않는다.
+    @Query(value = """
+            select o.channel      as "channel",
+                   o.order_id     as "orderId",
+                   o.amount       as "ledgerAmount",
+                   coalesce(f.rate, 0) as "appliedRate",
+                   o.amount - trunc(o.amount * coalesce(f.rate, 0)) as "expectedNet",
+                   sum(s.settled_amount) as "settledSum"
+            from order_ledger o
+            join settlement_batch b on b.id = :batchId
+            join settlement_line s
+                  on s.batch_id = :batchId
+                 and s.channel  = o.channel
+                 and s.order_id = o.order_id
+            left join fee_rule f on f.channel = o.channel
+            where o.channel = b.channel
+              and o.occurred_at >= b.period_start
+              and o.occurred_at <  b.period_end
+            group by o.channel, o.order_id, o.amount, f.rate
+            having o.amount - trunc(o.amount * coalesce(f.rate, 0)) <> sum(s.settled_amount)
+            """, nativeQuery = true)
+    List<FeeAwareMismatch> findFeeAwareMismatchByBatchId(@Param("batchId") Long batchId);
+
+    // #8 의 결과 모양. #2 의 AmountMismatch 에 appliedRate·expectedNet 을 더했다.
+    // 둘이 있어야 운영자가 원인을 가른다: 기대 순액과 어긋난 게 '
+    // 플랫폼이 덜 줘서'인지
+    // '요율 데이터가 틀려서'인지는 appliedRate 를 봐야 알 수 있다.
+    interface FeeAwareMismatch {
+        String getChannel();
+
+        String getOrderId();
+
+        BigDecimal getLedgerAmount();
+
+        BigDecimal getAppliedRate();
+
+        BigDecimal getExpectedNet();
+
         BigDecimal getSettledSum();
     }
 }
